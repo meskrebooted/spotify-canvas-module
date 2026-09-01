@@ -1,0 +1,30 @@
+{
+  "category:artwork": [
+    {
+      "id": "spotify-canvas-scraper",
+      "name": "SPOTIFY CANVAS v1",
+      "pkg": "com.8spine.module.spotify.canvas.v1",
+      "file": "spotify_canvas_v1.8spine",
+      "download": "https://raw.githubusercontent.com/meskrebooted/spotify-canvas-module/main/spotify_canvas_v1.8spine",
+      "version": "v1.0.0",
+      "code": 200,
+      "type": "ARTWORK",
+      "author": "Adam",
+      "description": "Spotify Canvas-first artwork resolver with preview fallback.",
+      "tags": [],
+      "featured": false,
+      "trusted": false,
+      "nsfw": false,
+      "lang": "all",
+      "folder": "artworks-modules",
+      "sources": [
+        {
+          "name": "SPOTIFY CANVAS v1",
+          "lang": "all",
+          "id": "spotify-canvas-scraper",
+          "baseUrl": "https://raw.githubusercontent.com/meskrebooted/spotify-canvas-module/main/"
+        }
+      ]
+    }
+  ]
+}
