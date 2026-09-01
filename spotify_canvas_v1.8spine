@@ -1,0 +1,306 @@
+const TOKEN_STORAGE_KEY = 'spotify_canvas_access_token_v1';
+const TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
+const DEFAULT_MARKET = 'US';
+
+const VISUAL_CACHE = {};
+const PREFETCH_QUEUE = {};
+
+let tokenPromise = null;
+
+const readConfigValue = (key) => {
+    const env = typeof process !== 'undefined' && process && process.env ? process.env : null;
+    const runtimeConfig = typeof globalThis !== 'undefined' && globalThis.__SPOTIFY_CANVAS_CONFIG__
+        ? globalThis.__SPOTIFY_CANVAS_CONFIG__
+        : null;
+
+    if (runtimeConfig && runtimeConfig[key] != null) return runtimeConfig[key];
+    if (env && env[key] != null) return env[key];
+    return null;
+};
+
+const parseBoolean = (value, defaultValue) => {
+    if (value == null) return defaultValue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value !== 'string') return defaultValue;
+
+    const normalized = value.trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+
+    return defaultValue;
+};
+
+const encodeBase64 = (value) => {
+    if (typeof btoa === 'function') return btoa(value);
+    if (typeof Buffer !== 'undefined') return Buffer.from(value, 'utf8').toString('base64');
+    throw new Error('No base64 encoder available');
+};
+
+const getPrivateEndpointTemplates = () => {
+    const raw = readConfigValue('SPOTIFY_CANVAS_PRIVATE_ENDPOINTS');
+    if (!raw || typeof raw !== 'string') return [];
+
+    return raw
+        .split(',')
+        .map(entry => entry.trim())
+        .filter(Boolean);
+};
+
+const getStoredToken = () => {
+    if (!AsyncStorage || !AsyncStorage.getItem) return Promise.resolve(null);
+
+    return AsyncStorage.getItem(TOKEN_STORAGE_KEY)
+        .then(raw => {
+            if (!raw) return null;
+
+            try {
+                const parsed = JSON.parse(raw);
+                if (!parsed || !parsed.token) return null;
+
+                if (parsed.expiresAt && parsed.expiresAt > Date.now() + TOKEN_EXPIRY_SAFETY_MS) {
+                    return parsed.token;
+                }
+
+                return null;
+            } catch (_) {
+                return null;
+            }
+        })
+        .catch(() => null);
+};
+
+const storeToken = (token, expiresInSeconds) => {
+    if (!AsyncStorage || !AsyncStorage.setItem || !token) return Promise.resolve(token);
+
+    const expiresAt = expiresInSeconds
+        ? Date.now() + (expiresInSeconds * 1000)
+        : null;
+
+    const payload = JSON.stringify({ token, expiresAt });
+    return AsyncStorage.setItem(TOKEN_STORAGE_KEY, payload)
+        .then(() => token)
+        .catch(() => token);
+};
+
+const requestClientCredentialsToken = () => {
+    const clientId = readConfigValue('SPOTIFY_CLIENT_ID');
+    const clientSecret = readConfigValue('SPOTIFY_CLIENT_SECRET');
+
+    if (!clientId || !clientSecret) return Promise.resolve(null);
+
+    const auth = encodeBase64(clientId + ':' + clientSecret);
+
+    return fetch('https://accounts.spotify.com/api/token', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Basic ' + auth,
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'grant_type=client_credentials'
+    })
+        .then(res => (res && res.ok) ? res.json() : null)
+        .then(json => {
+            if (!json || !json.access_token) return null;
+            return storeToken(json.access_token, json.expires_in || 0);
+        })
+        .catch(() => null);
+};
+
+const invalidateToken = () => {
+    tokenPromise = null;
+    if (!AsyncStorage || !AsyncStorage.removeItem) return Promise.resolve();
+    return AsyncStorage.removeItem(TOKEN_STORAGE_KEY).catch(() => null);
+};
+
+const getToken = () => {
+    const configuredToken = readConfigValue('SPOTIFY_CANVAS_ACCESS_TOKEN');
+    if (configuredToken) return Promise.resolve(configuredToken);
+
+    if (tokenPromise) return tokenPromise;
+
+    tokenPromise = getStoredToken()
+        .then(stored => stored || requestClientCredentialsToken())
+        .finally(() => {
+            tokenPromise = null;
+        });
+
+    return tokenPromise;
+};
+
+const spotifyApiFetch = (url) => {
+    return getToken().then(token => {
+        if (!token) return null;
+
+        const doFetch = (t) => fetch(url, {
+            headers: {
+                'Authorization': 'Bearer ' + t
+            }
+        });
+
+        return doFetch(token).then(response => {
+            if (response && response.status === 401 && !readConfigValue('SPOTIFY_CANVAS_ACCESS_TOKEN')) {
+                return invalidateToken()
+                    .then(() => requestClientCredentialsToken())
+                    .then(newToken => newToken ? doFetch(newToken) : null);
+            }
+
+            return response;
+        });
+    });
+};
+
+const resolveFromOfficialTrackFields = (trackJson) => {
+    if (!trackJson || typeof trackJson !== 'object') return '';
+
+    if (trackJson.canvas_url && typeof trackJson.canvas_url === 'string') return trackJson.canvas_url;
+    if (trackJson.canvas && typeof trackJson.canvas.url === 'string') return trackJson.canvas.url;
+    if (trackJson.external_urls && typeof trackJson.external_urls.canvas === 'string') return trackJson.external_urls.canvas;
+
+    return '';
+};
+
+const resolvePrivateCanvasUrl = (trackId, market) => {
+    const enabled = parseBoolean(readConfigValue('SPOTIFY_CANVAS_ENABLE_PRIVATE_FALLBACK'), false);
+    if (!enabled) return Promise.resolve('');
+
+    const templates = getPrivateEndpointTemplates();
+    if (!templates.length) return Promise.resolve('');
+
+    const buildUrl = (template) => template
+        .replace(/\{trackId\}/g, encodeURIComponent(trackId))
+        .replace(/\{market\}/g, encodeURIComponent(market));
+
+    return getToken().then(token => {
+        if (!token) return '';
+
+        let chain = Promise.resolve('');
+
+        templates.forEach(template => {
+            chain = chain.then(found => {
+                if (found) return found;
+
+                return fetch(buildUrl(template), {
+                    headers: {
+                        'Authorization': 'Bearer ' + token
+                    }
+                })
+                    .then(res => (res && res.ok) ? res.json() : null)
+                    .then(json => {
+                        if (!json) return '';
+                        if (typeof json.canvas_url === 'string') return json.canvas_url;
+                        if (typeof json.canvasUrl === 'string') return json.canvasUrl;
+                        if (json.canvas && typeof json.canvas.url === 'string') return json.canvas.url;
+                        if (json.data && typeof json.data.canvasUrl === 'string') return json.data.canvasUrl;
+                        if (Array.isArray(json.canvases) && json.canvases[0] && typeof json.canvases[0].url === 'string') {
+                            return json.canvases[0].url;
+                        }
+                        return '';
+                    })
+                    .catch(() => '');
+            });
+        });
+
+        return chain;
+    });
+};
+
+const getTrackVisual = (trackId, market) => {
+    const normalizedMarket = (market || DEFAULT_MARKET).toUpperCase();
+    const cacheKey = trackId + '_' + normalizedMarket;
+
+    if (!trackId) return Promise.resolve('');
+    if (cacheKey in VISUAL_CACHE) return Promise.resolve(VISUAL_CACHE[cacheKey]);
+
+    const trackUrl = 'https://api.spotify.com/v1/tracks/' + encodeURIComponent(trackId)
+        + '?market=' + encodeURIComponent(normalizedMarket);
+
+    return spotifyApiFetch(trackUrl)
+        .then(res => (res && res.ok) ? res.json() : null)
+        .then(trackJson => {
+            const officialCanvas = resolveFromOfficialTrackFields(trackJson);
+            if (officialCanvas) {
+                VISUAL_CACHE[cacheKey] = officialCanvas;
+                return officialCanvas;
+            }
+
+            return resolvePrivateCanvasUrl(trackId, normalizedMarket)
+                .then(privateCanvas => {
+                    if (privateCanvas) {
+                        VISUAL_CACHE[cacheKey] = privateCanvas;
+                        return privateCanvas;
+                    }
+
+                    const fallbackPreview = trackJson && typeof trackJson.preview_url === 'string'
+                        ? trackJson.preview_url
+                        : '';
+
+                    VISUAL_CACHE[cacheKey] = fallbackPreview;
+                    return fallbackPreview;
+                });
+        })
+        .catch(() => {
+            VISUAL_CACHE[cacheKey] = '';
+            return '';
+        });
+};
+
+const getArtistVisual = (artistId, market) => {
+    const normalizedMarket = (market || DEFAULT_MARKET).toUpperCase();
+    if (!artistId) return Promise.resolve('');
+
+    const url = 'https://api.spotify.com/v1/artists/' + encodeURIComponent(artistId)
+        + '/top-tracks?market=' + encodeURIComponent(normalizedMarket);
+
+    return spotifyApiFetch(url)
+        .then(res => (res && res.ok) ? res.json() : null)
+        .then(json => {
+            if (!json || !Array.isArray(json.tracks) || !json.tracks.length) return '';
+            const topTrackId = json.tracks[0] && json.tracks[0].id;
+            if (!topTrackId) return '';
+            return getTrackVisual(topTrackId, normalizedMarket);
+        })
+        .catch(() => '');
+};
+
+return {
+    id: 'spotify-canvas-scraper',
+    name: 'Spotify Canvas',
+    version: '1.0.0',
+    description: 'Spotify visual resolver with Canvas-first lookup and preview fallback.',
+
+    getSpotifyCanvas: (trackId, market) => getTrackVisual(trackId, market || DEFAULT_MARKET),
+
+    getSpotifyArtistCanvas: (artistId, market) => getArtistVisual(artistId, market || DEFAULT_MARKET),
+
+    getAnimatedArtwork: (trackId, country) => getTrackVisual(trackId, country || DEFAULT_MARKET),
+
+    getAnimatedArtistArtwork: (artistId, country) => getArtistVisual(artistId, country || DEFAULT_MARKET),
+
+    prefetchSpotifyCanvas: (trackId, market) => {
+        const normalizedMarket = (market || DEFAULT_MARKET).toUpperCase();
+        const cacheKey = trackId + '_' + normalizedMarket;
+
+        if (!trackId || (cacheKey in VISUAL_CACHE) || PREFETCH_QUEUE[cacheKey]) return;
+
+        PREFETCH_QUEUE[cacheKey] = getTrackVisual(trackId, normalizedMarket)
+            .finally(() => {
+                delete PREFETCH_QUEUE[cacheKey];
+            });
+    },
+
+    prefetchAnimatedArtwork: (trackId, country) => {
+        const normalizedMarket = (country || DEFAULT_MARKET).toUpperCase();
+        const cacheKey = trackId + '_' + normalizedMarket;
+
+        if (!trackId || (cacheKey in VISUAL_CACHE) || PREFETCH_QUEUE[cacheKey]) return;
+
+        PREFETCH_QUEUE[cacheKey] = getTrackVisual(trackId, normalizedMarket)
+            .finally(() => {
+                delete PREFETCH_QUEUE[cacheKey];
+            });
+    },
+
+    clearCache: () => {
+        Object.keys(VISUAL_CACHE).forEach(key => delete VISUAL_CACHE[key]);
+    }
+};
