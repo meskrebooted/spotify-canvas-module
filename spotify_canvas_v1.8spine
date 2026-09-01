@@ -8,13 +8,6 @@ const PREFETCH_QUEUE = {};
 let tokenPromise = null;
 
 const readConfigValue = (key) => {
-    const env = typeof process !== 'undefined' && process && process.env ? process.env : null;
-    const runtimeConfig = typeof globalThis !== 'undefined' && globalThis.__SPOTIFY_CANVAS_CONFIG__
-        ? globalThis.__SPOTIFY_CANVAS_CONFIG__
-        : null;
-
-    if (runtimeConfig && runtimeConfig[key] != null) return runtimeConfig[key];
-    if (env && env[key] != null) return env[key];
     return null;
 };
 
@@ -32,7 +25,6 @@ const parseBoolean = (value, defaultValue) => {
 
 const encodeBase64 = (value) => {
     if (typeof btoa === 'function') return btoa(value);
-    if (typeof Buffer !== 'undefined') return Buffer.from(value, 'utf8').toString('base64');
     throw new Error('No base64 encoder available');
 };
 
