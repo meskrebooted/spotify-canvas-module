@@ -1,6 +1,7 @@
 # spotify-canvas-module
 
 Clone of `apple-mus-module` adapted for Spotify Canvas.
+https://raw.githubusercontent.com/meskrebooted/spotify-canvas-module/refs/heads/copilot/implement-spotify-canvas-support/index.json
 
 ## Files
 - `/home/runner/work/spotify-canvas-module/spotify-canvas-module/spotify_canvas_v1.8spine`
