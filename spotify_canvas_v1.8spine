@@ -1,15 +1,30 @@
-const DEFAULT_MARKET = 'US';
 const CANVAS_API_BASE = 'https://canvastify.delitefully.com';
 
 const TRACK_CACHE = {};
 const PREFETCH_QUEUE = {};
 
-const normalizeMarket = (market) => (market || DEFAULT_MARKET).toUpperCase();
-
 const safeJsonFetch = (url) => {
     return fetch(url)
         .then(res => (res && res.ok) ? res.json() : null)
         .catch(() => null);
+};
+
+const parseTrackId = (input) => {
+    if (!input || typeof input !== 'string') return '';
+
+    const raw = input.trim();
+    if (!raw) return '';
+
+    const uriMatch = raw.match(/^spotify:track:([A-Za-z0-9]+)$/i);
+    if (uriMatch) return uriMatch[1];
+
+    const urlMatch = raw.match(/spotify\.com\/track\/([A-Za-z0-9]+)/i);
+    if (urlMatch) return urlMatch[1];
+
+    const clean = raw.replace(/\?.*$/, '').replace(/#.*/, '');
+    if (/^[A-Za-z0-9]{10,40}$/.test(clean)) return clean;
+
+    return '';
 };
 
 const fetchTrackCanvas = (trackId) => {
@@ -24,9 +39,9 @@ const fetchTrackCanvas = (trackId) => {
     });
 };
 
-const _fetchTrackVisual = (trackId, market) => {
-    const normalizedMarket = normalizeMarket(market);
-    const cacheKey = trackId + '_' + normalizedMarket;
+const _fetchTrackVisual = (maybeTrackId) => {
+    const trackId = parseTrackId(maybeTrackId);
+    const cacheKey = String(maybeTrackId || '');
 
     if (!trackId) return Promise.resolve('');
     if (cacheKey in TRACK_CACHE) return Promise.resolve(TRACK_CACHE[cacheKey]);
@@ -44,31 +59,27 @@ const _fetchTrackVisual = (trackId, market) => {
 
 return {
     id: 'spotify-canvas-scraper',
-    name: 'Spotify Canvas v5',
-    version: '5.0.0',
-    description: 'Spotify Canvas via canvastify.delitefully.com endpoint /api/canvas/:trackId.',
+    name: 'Spotify Canvas v6',
+    version: '6.0.0',
+    description: 'Spotify Canvas via canvastify /api/canvas/:trackId',
 
-    getSpotifyCanvas: (trackId, market) => _fetchTrackVisual(trackId, market),
+    getSpotifyCanvas: (trackId) => _fetchTrackVisual(trackId),
 
-    getAnimatedArtwork: (trackId, country) => _fetchTrackVisual(trackId, country),
+    getAnimatedArtwork: (trackIdOrAlbumId) => _fetchTrackVisual(trackIdOrAlbumId),
 
-    prefetchSpotifyCanvas: (trackId, market) => {
-        const normalizedMarket = normalizeMarket(market);
-        const cacheKey = trackId + '_' + normalizedMarket;
-
+    prefetchSpotifyCanvas: (trackId) => {
+        const cacheKey = String(trackId || '');
         if (!trackId || (cacheKey in TRACK_CACHE) || PREFETCH_QUEUE[cacheKey]) return;
 
-        PREFETCH_QUEUE[cacheKey] = _fetchTrackVisual(trackId, normalizedMarket)
+        PREFETCH_QUEUE[cacheKey] = _fetchTrackVisual(trackId)
             .finally(() => { delete PREFETCH_QUEUE[cacheKey]; });
     },
 
-    prefetchAnimatedArtwork: (trackId, country) => {
-        const normalizedMarket = normalizeMarket(country);
-        const cacheKey = trackId + '_' + normalizedMarket;
+    prefetchAnimatedArtwork: (trackIdOrAlbumId) => {
+        const cacheKey = String(trackIdOrAlbumId || '');
+        if (!trackIdOrAlbumId || (cacheKey in TRACK_CACHE) || PREFETCH_QUEUE[cacheKey]) return;
 
-        if (!trackId || (cacheKey in TRACK_CACHE) || PREFETCH_QUEUE[cacheKey]) return;
-
-        PREFETCH_QUEUE[cacheKey] = _fetchTrackVisual(trackId, normalizedMarket)
+        PREFETCH_QUEUE[cacheKey] = _fetchTrackVisual(trackIdOrAlbumId)
             .finally(() => { delete PREFETCH_QUEUE[cacheKey]; });
     },
 
